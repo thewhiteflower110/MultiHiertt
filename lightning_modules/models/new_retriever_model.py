@@ -8,10 +8,11 @@ import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
 from utils.new_retriever_utils import *
 from utils.utils import *
-from transformers import AutoModel, AutoTokenizer, AutoConfig
+from transformers import AutoModel, AutoTokenizer, AutoConfig,TapasConfig, TapasForQuestionAnswering
 from typing import Optional, Dict, Any, Tuple, List
 from transformers.optimization import AdamW, get_constant_schedule_with_warmup, get_linear_schedule_with_warmup
 from transformers.optimization import get_cosine_schedule_with_warmup
+torch.cuda.empty_cache()
 
 
 class RetrieverModel(LightningModule):
@@ -34,9 +35,11 @@ class RetrieverModel(LightningModule):
         self.model_finbert = AutoModel.from_pretrained(self.transformer_model_name)
         self.model_config_finbert = AutoConfig.from_pretrained(self.transformer_model_name)
 
-        self.transformer_model_name = "google/tapas"
-        self.model_tapas = AutoModel.from_pretrained(self.transformer_model_name)
-        self.model_config_tapas = AutoConfig.from_pretrained(self.transformer_model_name)
+        #self.transformer_model_name = "google/tapas-base-finetuned-wtq"
+        #self.model_tapas = AutoModel.from_pretrained(self.transformer_model_name)
+        self.model_config_tapas = TapasConfig.from_pretrained("google/tapas-base-finetuned-wtq")
+        self.model_tapas = TapasForQuestionAnswering.from_pretrained("google/tapas-base", config=self.model_config_tapas)
+
         self.warmup_steps = warmup_steps
 
         self.criterion = nn.CrossEntropyLoss(reduction='none', ignore_index=-1)
@@ -59,16 +62,22 @@ class RetrieverModel(LightningModule):
 
     def forward(self, text_input_ids, text_attention_mask, text_segment_ids,table_input_ids, table_attention_mask, table_segment_ids, metadata) -> List[Dict[str, Any]]:
 
-        input_ids = torch.tensor(input_ids).to("cuda")
-        attention_mask = torch.tensor(attention_mask).to("cuda")
-        segment_ids = torch.tensor(segment_ids).to("cuda")
-        
+        table_input_ids = torch.tensor(table_input_ids).to("cuda")
+        table_attention_mask = torch.tensor(table_attention_mask).to("cuda")
+        table_segment_ids = torch.tensor(table_segment_ids).to("cuda")
+        table_input_ids = torch.unsqueeze(table_input_ids.detach(),dim=1).to("cuda")
+        table_segment_ids = torch.unsqueeze(table_segment_ids.detach(),dim=1).to("cuda")
+        #print(table_segment_ids.shape, table_input_ids.shape)        
         tabert_outputs = self.model_tapas(
             input_ids=table_input_ids, attention_mask=table_attention_mask, token_type_ids=table_segment_ids)
 
         tabert_sequence_output = tabert_outputs.last_hidden_state
 
         tabert_pooled_output = tabert_sequence_output[:, 0, :]
+        
+        text_input_ids = torch.tensor(text_input_ids).to("cuda")
+        text_attention_mask = torch.tensor(text_attention_mask).to("cuda")
+        text_segment_ids = torch.tensor(text_segment_ids).to("cuda")
 
         finbert_outputs = self.model_finbert(
             input_ids=text_input_ids, attention_mask=text_attention_mask, token_type_ids=text_segment_ids)
@@ -88,6 +97,7 @@ class RetrieverModel(LightningModule):
         output_dicts = []
         for i in range(len(metadata)):
             output_dicts.append({"logits": logits[i], "filename_id": metadata[i]["filename_id"], "tab_ind": metadata[i]["tab_ind"], "text_ind": metadata[i]["text_ind"]})
+        print("made output dicts")
         return output_dicts
 
 
@@ -97,13 +107,16 @@ class RetrieverModel(LightningModule):
         table_attention_mask = batch_table["input_mask"]
         table_segment_ids = batch_table["segment_ids"]
         table_labels = batch_table["label"]
+        print("table_input_ids",table_input_ids.shape)
+        print("batch",batch.shape)
+        print("batch_table",batch_table.shape)
 
         text_input_ids = batch_text["input_ids"]
         text_attention_mask = batch_text["input_mask"]
         text_segment_ids = batch_text["segment_ids"]
         text_labels = batch_text["label"]
         
-        text_labels = torch.tensor(table_labels).to("cuda")
+        table_labels = torch.tensor(table_labels).to("cuda")
         text_labels = torch.tensor(text_labels).to("cuda")
         
         metadata = [{"filename_id": filename_id, "tab_ind": tab_ind, "text_ind":text_ind} for filename_id, tab_ind, text_ind in zip(batch_table["filename_id"], batch_table["ind"], batch_text["ind"])]
@@ -124,12 +137,12 @@ class RetrieverModel(LightningModule):
 
     def on_fit_start(self) -> None:
         # save the code using wandb
-        if self.logger: 
-            # if logger is initialized, save the code
-            self.logger[0].log_code()
-        else:
-            print("logger is not initialized, code will not be saved")  
-
+        #if self.logger: 
+        #    # if logger is initialized, save the code
+        #    self.logger[0].log_code()
+        #else:
+        #    print("logger is not initialized, code will not be saved")  
+        
         return super().on_fit_start()
 
     def validation_step(self, batch: torch.Tensor, batch_idx: int):
@@ -144,7 +157,7 @@ class RetrieverModel(LightningModule):
         text_segment_ids = batch_text["segment_ids"]
         text_labels = batch_text["label"]
         
-        text_labels = torch.tensor(table_labels).to("cuda")
+        table_labels = torch.tensor(table_labels).to("cuda")
         text_labels = torch.tensor(text_labels).to("cuda")
         
         metadata = [{"filename_id": filename_id, "tab_ind": tab_ind, "text_ind":text_ind} for filename_id, tab_ind, text_ind in zip(batch_table["filename_id"], batch_table["ind"], batch_text["ind"])]
@@ -171,7 +184,7 @@ class RetrieverModel(LightningModule):
         text_segment_ids = batch_text["segment_ids"]
         text_labels = batch_text["label"]
         
-        text_labels = torch.tensor(table_labels).to("cuda")
+        table_labels = torch.tensor(table_labels).to("cuda")
         text_labels = torch.tensor(text_labels).to("cuda")
         
         metadata = [{"filename_id": filename_id, "tab_ind": tab_ind, "text_ind":text_ind} for filename_id, tab_ind, text_ind in zip(batch_table["filename_id"], batch_table["ind"], batch_text["ind"])]
