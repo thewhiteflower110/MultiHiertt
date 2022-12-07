@@ -22,8 +22,8 @@ _SPECIAL_TOKENS_RE = re.compile(r"^\[[^ ]*\]$", re.UNICODE)
 class MathQAExample(
         collections.namedtuple(
             "MathQAExample",
-            "filename_id question paragraphs table_descriptions \
-            pos_sent_ids pos_table_ids"
+            "filename_id question paragraphs \
+            pos_sent_ids"
         )):
     def convert_single_example(self, *args, **kwargs):
         return convert_single_text_mathqa_example(self, *args, **kwargs)
@@ -240,29 +240,37 @@ def wrap_table_single_pair(tokenizer, question, table, label, answer_coords, ans
     '''
     single pair of question, context, label feature
     '''
-    path="./"
-    df0 = pd.read_csv(path+table)
+    path="./dataset/"
+    df0 = pd.read_csv(path+table).astype(str)
+    #print("queries",question)
+    #print("coords",answer_coords)
+    #print("ans text",answer_text)
     tokens = tokenizer(
         table=df0,
         queries=list(question),
-        answer_coordinates=answer_coords,
-        answer_text=answer_text,
+        #answer_coordinates=answer_coords,
+        #answer_text=answer_text,
         padding="max_length",
         return_tensors="pt",
-        float_answer = float_answer
+        #float_answer = float_answer
         )
-
-    tokens = [cls_token] + tokens + [sep_token]
+    #print("queries",len(queries))
+    #print("coords",len(answer_coordinates)
+    #print("ans text",answer_text)
+    #tokens = [cls_token] + tokens + [sep_token]
     segment_ids = [0] * len(tokens)
 
-    segment_ids.extend([0] * len(tokens))
+    #segment_ids.extend([0] * len(tokens))
 
     if len(tokens) > max_seq_length:
         tokens = tokens[:max_seq_length-1]
         tokens += [sep_token]
         segment_ids = segment_ids[:max_seq_length]
 
+    #print("tokens",len(tokens))
+    #print(type(tokens))
     input_ids = tokenizer.convert_tokens_to_ids(tokens) #check if this works here
+    #print("input_ids",len(input_ids))
     input_mask = [1] * len(input_ids)
 
     padding = [0] * (max_seq_length - len(input_ids))
@@ -304,11 +312,11 @@ def convert_single_table_mathqa_example(example, option, is_training, tokenizer,
     for table_idx,table in enumerate(tables):
         if table_idx in relevant_table_ids:
           this_input_feature = wrap_table_single_pair(
-                tokenizer, example.question, table, 1, example.answer_coords,example.answer_text, example.float_answer, example.max_seq_length,
+                tokenizer, example.question, table, 1, example.answer_coords[table_idx],example.answer_text[table_idx], example.float_answer[table_idx], max_seq_length,
                 cls_token, sep_token)
         else:
           this_input_feature = wrap_table_single_pair(
-                tokenizer, example.question, table, 1, example.answer_coords, example.answer_text, example.float_answer, example.max_seq_length,
+                tokenizer, example.question, table, 0, example.answer_coords[table_idx], example.answer_text[table_idx], example.float_answer[table_idx], max_seq_length,
                 cls_token, sep_token)
         this_input_feature["ind"] = table_idx
         this_input_feature["filename_id"] = example.filename_id
@@ -351,7 +359,7 @@ def read_mathqa_entry(df, entry, tokenizer):
         l=[(int(i[0]),int(i[1])) for i in l]
         ans.append(l)
   queries=list(question)
-
+  #print("read matqa answer coords",ans)
   return MathTableQAExample(
         filename_id=filename_id,
         question=question,
@@ -371,15 +379,16 @@ def convert_table_examples_to_features(examples,
                                  ):
     """Converts a list of DropExamples into InputFeatures."""
     res_table, res_table_neg =[] ,[]
-    pos_table_features, neg_table_features = convert_single_table_example(
-      tokenizer=tokenizer,
-        max_seq_length=max_seq_length,
-        option=option,
-        is_training=is_training,
-        cls_token=tokenizer.cls_token,
-        sep_token=tokenizer.sep_token)
+    for (example_index, example) in tqdm(enumerate(examples)):
+        pos_table_features, neg_table_features = example.convert_single_table_example(
+            tokenizer=tokenizer,
+            max_seq_length=max_seq_length,
+            option=option,
+            is_training=is_training,
+            cls_token=tokenizer.cls_token,
+            sep_token=tokenizer.sep_token)
         
-    res_table.extend(pos_table_features)
-    res_table_neg.extend(neg_table_features)
+        res_table.extend(pos_table_features)
+        res_table_neg.extend(neg_table_features)
     
     return res_table, res_table_neg
