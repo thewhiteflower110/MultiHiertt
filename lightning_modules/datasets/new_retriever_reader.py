@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 
 from utils.datasets_util import right_pad_sequences
 import pandas as pd
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer,TapasTokenizer
 import utils.new_retriever_utils as retriever_utils
 from utils.new_retriever_utils import *
 from utils.utils import *
@@ -24,6 +24,7 @@ class TabertRetrieverDataset(Dataset):
         self, 
         transformer_model_name: str,
         file_path: str,
+        inventory_file_path: str,
         max_instances: int,
         mode: str = "train", 
         **kwargs):
@@ -31,19 +32,17 @@ class TabertRetrieverDataset(Dataset):
 
         assert mode in ["train", "test", "valid"]
 
-        self.tokenizer = AutoTokenizer.from_pretrained("google/tapas")
-
+        self.tokenizer = TapasTokenizer.from_pretrained("google/tapas-base-finetuned-wtq")
+        self.df = pd.read_csv(inventory_file_path, header=None, delimiter='|')
         self.max_instances = max_instances
         self.mode = mode
         self.instances = self.read(file_path, self.tokenizer)
-        if mode=="train":
-          self.df = pd.read_csv("/content/train_inventory.csv", header=None, delimiter='|')
-        elif mode =="valid":
-          self.df = pd.read_csv("/content/dev_inventory.csv", header=None, delimiter='|')
-        elif mode=="test":
-          self.df = pd.read_csv("/content/test_inventory.csv", header=None, delimiter='|')
-        else:
-          print("Invalid mode, cannot get inventory file")
+        
+        #self.df = pd.read_csv(inventory_file_path, header=None, delimiter='|')
+        #elif mode =="valid":
+        #  self.df = pd.read_csv(dev_inventory_file_path, header=None, delimiter='|')
+        #elif mode=="test":
+        #  self.df = pd.read_csv(test_inventory_file_path, header=None, delimiter='|')
 
     def read(self, input_path: str, tokenizer) -> Iterable[Dict[str, Any]]:
         with open(input_path) as input_file:
@@ -80,7 +79,7 @@ class TabertRetrieverDataset(Dataset):
             random.shuffle(neg_table)
             data = pos_table + neg_table[:min(len(neg_table),len(pos_table))]
         else:
-            data = pos_table + neg_table[:min(len(neg_table),len(pos_table))]
+            data = pos_table + neg_table
         print(self.mode, len(data))
         return data
 
@@ -143,11 +142,12 @@ class FinbertRetrieverDataset(Dataset):
             "max_seq_length": 512,
             }
 
-        features = convert_examples_to_features(**kwargs)
+        features = convert_text_examples_to_features(**kwargs)
         data_pos, neg_sent = features[0], features[1]
 
         
         if self.mode == "train":
+            random.shuffle(data_pos)
             random.shuffle(neg_sent)
             data = data_pos + neg_sent[:min(len(neg_sent),len(data_pos))]
         else:
@@ -170,14 +170,23 @@ class FinbertRetrieverDataset(Dataset):
         self.instances.extend(instances)
 
 def customized_collate_fn(examples: List[Dict[str, Any]]) -> Dict[str, Any]:
-    result_dict = {}
-    for k in examples[0].keys():
+    result_text_dict = {}
+    table_examples = examples[0]
+    text_examples = examples[1]
+    for k in text_examples[0].keys():
         try:
-            result_dict[k] = right_pad_sequences([torch.tensor(ex[k]) for ex in examples], 
+            result_text_dict[k] = right_pad_sequences([torch.tensor(ex[k]) for ex in text_examples], 
                                     batch_first=True, padding_value=0)
         except:
-            result_dict[k] = [ex[k] for ex in examples]
-    return result_dict
+            result_text_dict[k] = [ex[k] for ex in text_examples]
+    result_table_dict = {}
+    for k in table_examples[0].keys():
+        try:
+            result_table_dict[k] = right_pad_sequences([torch.tensor(ex[k]) for ex in table_examples],
+                                    batch_first=True, padding_value=0)
+        except:
+            result_table_dict[k] = [ex[k] for ex in table_examples]
+    return (result_table_dict, result_text_dict)
 
 
 class RetrieverDataModule(LightningDataModule):
@@ -188,6 +197,9 @@ class RetrieverDataModule(LightningDataModule):
                 train_file_path: str = None,
                 num_workers: int = 8,
                 val_file_path: str = None,
+                train_inventory_file_path: str = None,
+                dev_inventory_file_path: str = None,
+                #test_inventory_file_path: str = None,
                 train_max_instances: int = sys.maxsize,
                 val_max_instances: int = sys.maxsize):
         super().__init__()
@@ -200,6 +212,10 @@ class RetrieverDataModule(LightningDataModule):
         self.train_file_path = train_file_path
         self.val_file_path = val_file_path
 
+        self.train_inventory_file_path=train_inventory_file_path
+        self.dev_inventory_file_path=dev_inventory_file_path
+        #self.test_inventory_file_path=test_inventory_file_path
+
         self.train_max_instances = train_max_instances
         self.val_max_instances = val_max_instances
         
@@ -210,8 +226,9 @@ class RetrieverDataModule(LightningDataModule):
     def setup(self, stage: Optional[str] = None):
         assert stage in ["fit", "validate", "test"]
 
-        tabert_train_data = TabertRetrieverDataset(transformer_model_name = "google/tapas",
+        tabert_train_data = TabertRetrieverDataset(transformer_model_name = "google/tapas-base-finetuned-wtq",
                                 file_path=self.train_file_path,
+                                inventory_file_path = self.train_inventory_file_path,
                                 max_instances=self.train_max_instances, 
                                 mode="train")
         finbert_train_data = FinbertRetrieverDataset(transformer_model_name = "ProsusAI/finbert",
@@ -220,8 +237,9 @@ class RetrieverDataModule(LightningDataModule):
                                 mode="train")
         self.train_data = (tabert_train_data,finbert_train_data)
 
-        tabert_val_data = TabertRetrieverDataset(transformer_model_name = "google/tapas",
+        tabert_val_data = TabertRetrieverDataset(transformer_model_name = "google/tapas-base-finetuned-wtq",
                                 file_path=self.val_file_path,
+                                inventory_file_path = self.dev_inventory_file_path,
                                 max_instances=self.val_max_instances, 
                                 mode="valid")
         finbert_val_data = FinbertRetrieverDataset(transformer_model_name = "ProsusAI/finbert",
@@ -268,7 +286,7 @@ class RetrieverPredictionDataModule(LightningDataModule):
     def setup(self, stage: Optional[str] = None):
         assert stage in ["test", "predict"]
         
-        tabert_test_data = TabertRetrieverDataset(transformer_model_name = "google/tapas",
+        tabert_test_data = TabertRetrieverDataset(transformer_model_name = "google/tapas-base-finetuned-wtq",
                                 file_path=self.test_file_path,
                                 max_instances=self.test_max_instances, 
                                 mode="test")
